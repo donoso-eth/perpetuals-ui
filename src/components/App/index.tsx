@@ -13,6 +13,8 @@ import { Contract, Wallet, ethers } from "ethers";
 import metamask from "../../assets/images/metamask.png";
 import Header from "../Header";
 import Switch from "react-switch";
+import { Tab, Tabs, TabList, TabPanel } from "react-tabs";
+import "react-tabs/style/react-tabs.css";
 import "./style.css";
 
 import Loading from "../Loading";
@@ -28,10 +30,21 @@ import { CallWithERC2771Request, GelatoRelay } from "@gelatonetwork/relay-sdk";
 import { TempKey } from "../../session/TempKey";
 
 import { counterAbi } from "../../assets/contracts/counterAbi";
-import { } from 'ethers'
+import {} from "ethers";
+import Signless from "../Signless";
+import { perpMockAbi } from "../../assets/contracts/perpMockAbi";
+
+export interface IORDER {
+  orderId: number;
+  timestamp: number;
+  amount: number;
+  price: number;
+  publishTime: number;
+  above?: boolean;
+  leverage?: number;
+}
 
 const App = () => {
-
   const GELATO_RELAY_API_KEY = "G0v7iVKdiGNkVWa_eISU7tH8iB0O7UlwWNOakmIXlOw_";
   let destroyFetchTask: Subject<void> = new Subject();
   let txHash: string | undefined;
@@ -39,14 +52,13 @@ const App = () => {
 
   const localStorage = new LocalStorage();
 
-  const [sessionKeyContract, setSessionKeyContract] =
-    useState<Contract>();
+  const [sessionKeyContract, setSessionKeyContract] = useState<Contract>();
   const [counterContract, setCounterContract] = useState<Contract>();
+  const [perpMockContract, setPerpMockContract] = useState<Contract>();
 
   const [ready, setReady] = useState(false);
 
-  const [provider, setProvider] =
-    useState<ethers.BrowserProvider | null>(null);
+  const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.Signer | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [message, setMessage] = useState<Message>({
@@ -54,17 +66,14 @@ const App = () => {
     body: undefined,
     taskId: undefined,
   });
-  const [counter, setCounter] = useState<string>("Loading");
+
+  const [orders, setOrders] = useState<Array<IORDER>>([]);
+  const [conditionalOrders, setConditionalOrders] = useState<Array<IORDER>>([]);
+  const [marginOrders, setMarginOrders] = useState<Array<IORDER>>([]);
+
   const [signerAddress, setSignerAddress] = useState<string | null>(null);
   const [signLess, setSignLess] = useState<boolean>(false);
-  const [chainId, setChainId] = useState<Chain>({ name: "", id: 0 });
-
-  const [dedicatedMsgSender, setDedicatedMsgSender] =
-    useState<DedicatedMsgSender>({
-      address: "",
-      isDeployed: false,
-      balance: "0",
-    });
+  const [tabIndex, setTabIndex] = useState(0);
 
   const [max, setMax] = useState<boolean>(false);
   const [connectStatus, setConnectStatus] = useState<Status | null>({
@@ -81,7 +90,7 @@ const App = () => {
       localStorage.remove(StorageKeys.SESSION_KEY);
     });
 
-    window.ethereum.on("chainChanged",async  () => {
+    window.ethereum.on("chainChanged", async () => {
       const web3Provider = new ethers.BrowserProvider(window.ethereum);
       setLoading(true);
       refresh(web3Provider);
@@ -91,10 +100,10 @@ const App = () => {
         method: "eth_chainId",
       });
 
-      if (currentChainId !== "0x5") {
+      if (currentChainId !== "0x66eed") {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x5" }],
+          params: [{ chainId: "0x66eed" }],
         });
       }
     });
@@ -120,7 +129,6 @@ const App = () => {
   const onConnect = async () => {
     console.log("connec");
     try {
-
       await window.ethereum.request({
         method: "wallet_requestPermissions",
         params: [
@@ -146,10 +154,7 @@ const App = () => {
     alert("Copied to Clipboard");
   };
 
-
-
   const onAction = async (action: number) => {
-  
     switch (action) {
       case 0:
         console.log("trading");
@@ -157,7 +162,7 @@ const App = () => {
         if (signLess) {
           tradeSignLess();
         } else {
-          trade();
+          setOrder();
         }
 
         break;
@@ -170,6 +175,26 @@ const App = () => {
     }
   };
 
+  const setOrder = async () => {
+    try {
+      setMessage({
+        header: "Waiting for tx...",
+        body: undefined,
+        taskId: undefined,
+      });
+      setLoading(true);
+      let perpMockContract = await getPerpMockContract(provider!);
+      let tx = await perpMockContract?.setOrder(1000);
+      await tx.wait();
+      setTimeout(() => {
+        doRefresh();
+      }, 2000);
+    } catch (error) {
+      console.log(error);
+      setLoading(false);
+    }
+  };
+
   const trade = async () => {
     try {
       setMessage({
@@ -179,9 +204,11 @@ const App = () => {
       });
       setLoading(true);
       let counterContract = await getCounterContract(provider!);
-      let tx =await counterContract?.increment()
-      await tx.wait()
-      setTimeout(()=> {  doRefresh()}, 2000)
+      let tx = await counterContract?.increment();
+      await tx.wait();
+      setTimeout(() => {
+        doRefresh();
+      }, 2000);
     } catch (error) {
       console.log(error);
       setLoading(false);
@@ -195,46 +222,46 @@ const App = () => {
     });
     setLoading(true);
 
-    let tmpCountercontract = await getCounterContract(provider!)
-    let tmpSessionKeyContract = await getSessionContract(provider!)
-    const { data: dataCounter } = await tmpCountercontract!.increment.populateTransaction();
+    let tmpCountercontract = await getCounterContract(provider!);
+    let tmpSessionKeyContract = await getSessionContract(provider!);
+    const { data: dataCounter } =
+      await tmpCountercontract!.increment.populateTransaction();
 
     const sessionId = localStorage.get(StorageKeys.SESSION_ID);
     const sessionKey = localStorage.get(StorageKeys.SESSION_KEY);
-    
+
     const tempKey = new TempKey(sessionKey);
 
-    console.log(sessionId)
+    console.log(sessionId);
 
     let { data: dataExecute } =
-       await tmpSessionKeyContract!.executeCall.populateTransaction(
+      await tmpSessionKeyContract!.executeCall.populateTransaction(
         await tmpCountercontract?.getAddress()!,
-         dataCounter!,
-         0,
-         sessionId
-       );
+        dataCounter!,
+        0,
+        sessionId
+      );
 
-  
-      const signer = new ethers.Wallet(sessionKey as string, provider!);
-      
-      const request: CallWithERC2771Request = {
-        chainId:BigInt(5),
-        target: await tmpSessionKeyContract?.getAddress()!,
-        data: dataExecute as string,
-        user: tempKey.address as string,
-      };
-  
+    const signer = new ethers.Wallet(sessionKey as string, provider!);
+
+    const request: CallWithERC2771Request = {
+      chainId: BigInt(5),
+      target: await tmpSessionKeyContract?.getAddress()!,
+      data: dataExecute as string,
+      user: tempKey.address as string,
+    };
+
     const response = await relay.sponsoredCallERC2771(
       request,
       signer,
       GELATO_RELAY_API_KEY as string
     );
-  
-    console.log(`https://relay.gelato.digital/tasks/status/${response.taskId}`);
-      fetchStatus(response.taskId)
 
+    console.log(`https://relay.gelato.digital/tasks/status/${response.taskId}`);
+    fetchStatus(response.taskId);
   };
 
+  //// Tak Status per TaskId Id
   const fetchStatus = async (taskIdToQuery: string) => {
     const numbers = interval(1000);
 
@@ -242,40 +269,36 @@ const App = () => {
 
     takeFourNumbers.subscribe(async (x) => {
       try {
-        
-        let status = await relay.getTaskStatus(taskIdToQuery)
-    
+        let status = await relay.getTaskStatus(taskIdToQuery);
 
+        let details = {
+          txHash: status?.transactionHash || undefined,
+          chainId: status?.chainId?.toString() || undefined,
+          blockNumber: status?.blockNumber?.toString() || undefined,
+          executionDate: status?.executionDate || undefined,
+          creationnDate: status?.creationDate || undefined,
+          taskState: (status?.taskState as TaskState) || undefined,
+        };
+        let body = ``;
+        let header = ``;
 
-      let details = {
-        txHash: status?.transactionHash || undefined,
-        chainId: status?.chainId?.toString() || undefined,
-        blockNumber: status?.blockNumber?.toString() || undefined,
-        executionDate: status?.executionDate || undefined,
-        creationnDate: status?.creationDate || undefined,
-        taskState: (status?.taskState as TaskState) || undefined,
-      };
-      let body = ``;
-      let header = ``;
+        txHash = details.txHash;
+        console.log(204, details.taskState);
 
-      txHash = details.txHash;
-      console.log(204, details.taskState)
- 
         switch (details.taskState!) {
           case TaskState.WaitingForConfirmation:
             header = `Transaction Relayed`;
-            body = `Waiting for Confirmation`
+            body = `Waiting for Confirmation`;
             break;
           case TaskState.Pending:
             header = `Transaction Relayed`;
             body = `Pending Status`;
-           
 
             break;
           case TaskState.CheckPending:
             header = `Transaction Relayed`;
-            body =`Simulating Transaction`;
-          
+            body = `Simulating Transaction`;
+
             break;
           case TaskState.ExecPending:
             header = `Transaction Relayed`;
@@ -284,14 +307,16 @@ const App = () => {
           case TaskState.ExecSuccess:
             header = `Transaction Executed`;
             body = `Waiting to refresh...`;
-          
+
             // await this.getTokenId();
 
             //this.store.dispatch(Web3Actions.chainBusy({ status: false }));
-            
+
             destroyFetchTask.next();
-            setTimeout(()=> {  doRefresh()}, 2000)
-           
+            setTimeout(() => {
+              doRefresh();
+            }, 2000);
+
             break;
           case TaskState.Cancelled:
             header = `Canceled`;
@@ -326,7 +351,7 @@ const App = () => {
         setMessage({
           header,
           body,
-          taskId:txHash,
+          taskId: txHash,
         });
 
         // this.store.dispatch(
@@ -337,11 +362,15 @@ const App = () => {
         //     },
         //   })
         // );
-      
-    } catch (error) {
-        
-    }
+      } catch (error) {}
     });
+  };
+
+  //
+  const changeTab = (index: number) => {
+    setTabIndex(index);
+    console.log(357, index);
+    refreshTab(index);
   };
 
   const doRefresh = async () => {
@@ -352,6 +381,110 @@ const App = () => {
     });
     setLoading(true);
     await refresh(provider!);
+  };
+
+  const readOrders = async (
+    provider: ethers.BrowserProvider,
+    signerAddress: string
+  ) => {
+    let perpMockContract = await getPerpMockContract(provider);
+
+    let totalOrders = await perpMockContract.nrOrdersByUser(signerAddress);
+
+    const _orders = [];
+    for (let i = 0; i < +totalOrders.toString(); i++) {
+      let orderId = await perpMockContract.ordersByUser.staticCallResult(
+        signerAddress,
+        i
+      );
+      console.log(+orderId.toString());
+      let orderResult = await perpMockContract.getOrder(+orderId.toString());
+      let order: IORDER = {
+        orderId: +orderId.toString(),
+        timestamp: +orderResult["timestamp"].toString(),
+        publishTime: +orderResult["publishTime"].toString(),
+        amount: +orderResult["amount"].toString(),
+        price: +orderResult["price"].toString(),
+      };
+
+      _orders.push(order);
+    }
+    console.log(_orders);
+    setOrders(_orders);
+  };
+
+  const readConditionalOrders = async (
+    provider: ethers.BrowserProvider,
+    signerAddress: string
+  ) => {
+    let perpMockContract = await getPerpMockContract(provider);
+
+    let totalOrders = await perpMockContract.nrConditionalOrdersByUser(signerAddress);
+
+    const _orders = [];
+    for (let i = 0; i < +totalOrders.toString(); i++) {
+      let orderId = await perpMockContract.consitionslOrdersByUser.staticCallResult(
+        signerAddress,
+        i
+      );
+      console.log(+orderId.toString());
+      let orderResult = await perpMockContract.getOrder(+orderId.toString());
+      let order: IORDER = {
+        orderId: +orderId.toString(),
+        timestamp: +orderResult["timestamp"].toString(),
+        publishTime: +orderResult["publishTime"].toString(),
+        amount: +orderResult["amount"].toString(),
+        price: +orderResult["price"].toString(),
+      };
+
+      _orders.push(order);
+    }
+    console.log(_orders);
+    setOrders(_orders);
+  };
+
+  const readMarginTrades = async (
+    provider: ethers.BrowserProvider,
+    signerAddress: string
+  ) => {
+    let perpMockContract = await getPerpMockContract(provider);
+
+    let totalOrders = await perpMockContract.nrMarginTradesByUser(signerAddress);
+
+    const _orders = [];
+    for (let i = 0; i < +totalOrders.toString(); i++) {
+      let orderId = await perpMockContract.marginTradesByUser.staticCallResult(
+        signerAddress,
+        i
+      );
+      console.log(+orderId.toString());
+      let orderResult = await perpMockContract.getOrder(+orderId.toString());
+      let order: IORDER = {
+        orderId: +orderId.toString(),
+        timestamp: +orderResult["timestamp"].toString(),
+        publishTime: +orderResult["publishTime"].toString(),
+        amount: +orderResult["amount"].toString(),
+        price: +orderResult["price"].toString(),
+      };
+
+      _orders.push(order);
+    }
+    console.log(_orders);
+    setOrders(_orders);
+  };
+
+
+  const refreshTab = async (index: number) => {
+    switch (index) {
+      case 1:
+        await readOrders(provider!, signerAddress!);
+        break;
+        case 2:
+        await readConditionalOrders(provider!, signerAddress!);
+          break;
+      default:
+        break;
+    }
   };
 
   const refresh = async (provider: ethers.BrowserProvider) => {
@@ -368,8 +501,8 @@ const App = () => {
         state: State.success,
         message: "Connection Succeed",
       });
-
-      getCounter(provider, signerAddress);
+      console.log(405, signerAddress);
+      readOrders(provider, signerAddress);
 
       setLoading(false);
     } else {
@@ -381,16 +514,14 @@ const App = () => {
     // console.log(signer);
   };
 
-  const getSessionContract = async (
-    provider: ethers.BrowserProvider
-  ) => {
+  const getSessionContract = async (provider: ethers.BrowserProvider) => {
     if (sessionKeyContract == undefined) {
-      const sessionKeyAddress = "0xde2568192B20A57dE387132b54C3fa492E334837";
+      const sessionKeyAddress = "0x5B91C8E7a2DEABC623E6Ab34E8c26F27Cc18bC66";
       const _sessionKeyContract = new ethers.Contract(
         sessionKeyAddress,
         sessionKeyAbi,
         provider
-      ) ;
+      );
 
       setSessionKeyContract(_sessionKeyContract);
       return _sessionKeyContract;
@@ -399,9 +530,7 @@ const App = () => {
     }
   };
 
-  const getCounterContract = async (
-    provider: ethers.BrowserProvider
-  ) => {
+  const getCounterContract = async (provider: ethers.BrowserProvider) => {
     if (counterContract == undefined) {
       const signer = await provider?.getSigner();
       const counterAddress = "0x87CA985c8F3e9b70bCCc25bb67Ae3e2F6f31F51C";
@@ -417,7 +546,22 @@ const App = () => {
       return counterContract;
     }
   };
+  const getPerpMockContract = async (provider: ethers.BrowserProvider) => {
+    if (perpMockContract == undefined) {
+      const signer = await provider?.getSigner();
+      const perpMockAddress = "0x5115B85246bb32dCEd920dc6a33E2Be6E37fFf6F";
+      const _perpMock = new ethers.Contract(
+        perpMockAddress,
+        perpMockAbi,
+        signer
+      );
 
+      setPerpMockContract(counterContract);
+      return _perpMock;
+    } else {
+      return perpMockContract;
+    }
+  };
   const getSession = async (provider: ethers.BrowserProvider) => {
     const contract = await getSessionContract(provider);
 
@@ -431,16 +575,7 @@ const App = () => {
     return session;
   };
 
-  const getCounter = async (
-    provider: ethers.BrowserProvider,
-    signerAddress: string
-  ) => {
-    const contract = await getCounterContract(provider);
 
-    const balance = await contract.counter(signerAddress);
-
-    setCounter(balance.toString());
-  };
 
   const signToggle = async () => {
     setSignLess(!signLess);
@@ -463,7 +598,6 @@ const App = () => {
     let _sessionKey = localStorage.get(StorageKeys.SESSION_KEY);
     console.log(_sessionId, _sessionKey);
 
-   
     if (_sessionId == null || _sessionKey == null) {
       createSessionKeys();
     } else {
@@ -507,7 +641,7 @@ const App = () => {
       sessionKeyAddress,
       sessionKeyAbi,
       provider!
-    ) ;
+    );
 
     const sessionId = uuidv4(); // ⇨ '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 
@@ -520,8 +654,6 @@ const App = () => {
     localStorage.save(StorageKeys.SESSION_KEY, tempKey.privateKey);
 
     console.log(sessionId, tempAddress);
-
-
 
     const { data } = await sessionKeyContract.createSession.populateTransaction(
       sessionId,
@@ -564,15 +696,14 @@ const App = () => {
       if (window.ethereum == undefined) {
         setLoading(false);
       } else {
-
         const currentChainId = await window.ethereum.request({
           method: "eth_chainId",
         });
 
-        if (currentChainId !== "0x5") {
+        if (currentChainId !== "0x66eed") {
           await window.ethereum.request({
             method: "wallet_switchEthereumChain",
-            params: [{ chainId: "0x5" }],
+            params: [{ chainId: "0x66eed" }],
           });
         }
         const web3Provider = new ethers.BrowserProvider(window.ethereum);
@@ -595,50 +726,81 @@ const App = () => {
           <div>
             {loading && <Loading message={message} />}
             <main>
-          
-              <div className="flex">
-                <p className="title">
-                 Trade Signless
-                </p>
-                <div className="isDeployed">
-                  <p>User:</p>
-                  <p className="highlight">
-                    {signerAddress}
-                    <span
-                      style={{ position: "relative", top: "5px", left: "5px" }}
-                    >
-                      <BiCopy
-                        cursor={"pointer"}
-                        color="white"
-                        fontSize={"20px"}
-                        onClick={() => onCopy(signerAddress!)}
-                      />
-                    </span>
-                  </p>
-                  <p style={{ fontWeight: "600" }}>
-                    Counter:
-                    <span
-                      style={{ marginLeft: "10px", fontSize: "15px" }}
-                      className="highlight"
-                    >
-                      {counter}
-                      <span style={{ position: "relative", top: "5px" }}>
-                        <BiRefresh
-                          color="white"
-                          cursor={"pointer"}
-                          fontSize={"20px"}
-                          onClick={doRefresh}
-                        />
-                      </span>
-                    </span>
-                  </p>
-                  <Button ready={ready} onClick={() => onAction(0)}>
-                    {" "}
-                    Trade
-                  </Button>
-                  <p style={{marginTop:'10px'}}> <span style={{    position: 'relative',bottom: '9px'}}> Signless: </span><Switch onChange={signToggle} checked={signLess} /></p> 
-                </div>
-              </div>
+              <Tabs
+                style={{ margin: "20px" }}
+                defaultIndex={0}
+                onSelect={(index) => changeTab(index)}
+              >
+                <TabList>
+                  <Tab>OracleKeeper </Tab>
+                  <Tab>OrderTrigger</Tab>
+                  <Tab>Liquidations</Tab>
+                </TabList>
+
+                <TabPanel>
+                  <div className="flex">
+                    <Signless checked={signLess} signToggle={signToggle} />
+                    <div className="isDeployed">
+                    <p style={{ fontWeight: "300" }}>
+                        User:
+                        <span
+                          style={{ marginLeft: "10px", fontSize: "15px" }}
+                          className="highlight"
+                        >
+                        {signerAddress?.substring(0, 6) +
+                          "..." +
+                          signerAddress?.substring(
+                            signerAddress?.length - 4,
+                            signerAddress?.length
+                          )}
+                        </span>
+                      </p>
+                    
+                      <p style={{ fontWeight: "300" }}>
+                        nrOrders:
+                        <span
+                          style={{ marginLeft: "10px", fontSize: "15px" }}
+                          className="highlight"
+                        >
+                          {orders.length}
+                          <span style={{ position: "relative", top: "5px" }}>
+                            <BiRefresh
+                              color="white"
+                              cursor={"pointer"}
+                              fontSize={"20px"}
+                              onClick={doRefresh}
+                            />
+                          </span>
+                        </span>
+                      </p>
+                      <Button ready={ready} onClick={() => onAction(0)}>
+                        {" "}
+                        SetOrder
+                      </Button>
+                      <div className="table-master">
+                        <div className="table">
+                          <p className="table-header"> OrderId</p> <p style={{ width:'100px'}}className="table-header"> Timestamp</p> <p style={{ width:'150px'}} className="table-header"> PublishTime</p>
+                          <p className="table-header"> Price</p>
+                        </div>
+                        {orders.map((val, index) => {
+                          return  <div className="table">
+                          <p className="table-header"> {val.orderId}</p> <p style={{ width:'100px'}}className="table-header"> {val.timestamp}</p> <p style={{ width:'150px'}} className="table-header"> {val.publishTime}</p>
+                          <p className="table-header"> {val.price}</p>
+                        </div>;
+                        })}
+                      </div>
+                  
+               
+                    </div>
+                  </div>
+                </TabPanel>
+                <TabPanel>
+                  <h2>Any content 2</h2>
+                </TabPanel>
+                <TabPanel>
+                  <h2>Any content 3</h2>
+                </TabPanel>
+              </Tabs>
             </main>
           </div>
         )}{" "}
