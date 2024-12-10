@@ -11,7 +11,7 @@ const Signless = ({ checked, signToggle }: SignlessProps) => {
   return (
     <div  style={{flexDirection: 'row', width:'100%', justifyContent:'end', marginRight:'10px', fontSize:'14px'}} className="flex align-items-center">
       {" "}
-      <p style={{ position: "relative" }}> Signless: </p>
+      <p style={{ position: "relative" }}> Gassless: </p>
       <div style={{ transform: 'scale(0.75)', position: 'relative',top: '2px',right: '8px'}} >
       <Switch  onChange={signToggle} checked={checked} />
       </div>

@@ -5,14 +5,13 @@ import { ReactComponent as Check } from '../../icons/check.svg';
 import './style.css';
 
 interface ButtonProps {
-  ready: boolean;
   status?: Status | null;
   onClick: React.MouseEventHandler<HTMLButtonElement>;
   children: React.ReactNode;
 
 }
 
-const Button = ({ ready, status, onClick, children }: ButtonProps) => {
+const Button = ({  status, onClick, children }: ButtonProps) => {
   const state = status?.state;
   const pending = state === State.pending;
 
@@ -29,6 +28,7 @@ const Button = ({ ready, status, onClick, children }: ButtonProps) => {
         </div>
       )}
       <button
+      style={{cursor: 'pointer'}}
         disabled={ pending }
         onClick={ onClick }>
         { pending ? 'Pending...' : children }

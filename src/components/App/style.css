@@ -97,10 +97,14 @@ p {
 
 .table-header {
   font-size: 16px;
-  border: 1px solid grey;
+  border: 1px solid #b4a298;;
   height: 25px;
   padding: 5px 5px 1px;
   width: 80px;
   margin: unset;
-
 }
+.table-header-title {
+  color: #202020;
+  background: #f1bea1;
+}
+

@@ -10,6 +10,7 @@ import {
 import { BiRefresh, BiCopy } from "react-icons/bi";
 import { firstValueFrom, interval, pipe, Subject, take, takeUntil } from "rxjs";
 import { Contract, Wallet, ethers } from "ethers";
+import { BrowserProvider } from "ethers6";
 import metamask from "../../assets/images/metamask.png";
 import Header from "../Header";
 import Switch from "react-switch";
@@ -32,20 +33,26 @@ import { TempKey } from "../../session/TempKey";
 import { counterAbi } from "../../assets/contracts/counterAbi";
 import {} from "ethers";
 import Signless from "../Signless";
+import { EvmPriceServiceConnection, PriceFeed } from "@pythnetwork/pyth-evm-js";
 import { perpMockAbi } from "../../assets/contracts/perpMockAbi";
+import Action from "../Action";
 
 export interface IORDER {
   orderId: number;
   timestamp: number;
   amount: number;
   price: number;
-  publishTime: number;
+  publishTime?: number;
   above?: boolean;
   leverage?: number;
+  priceSettled?: number;
+  threshold?: number | null;
+  tokens?: number;
+  active?: boolean;
 }
 
 const App = () => {
-  const GELATO_RELAY_API_KEY = "G0v7iVKdiGNkVWa_eISU7tH8iB0O7UlwWNOakmIXlOw_";
+  const GELATO_RELAY_API_KEY = "API KEY"
   let destroyFetchTask: Subject<void> = new Subject();
   let txHash: string | undefined;
   const relay = new GelatoRelay();
@@ -57,6 +64,7 @@ const App = () => {
   const [perpMockContract, setPerpMockContract] = useState<Contract>();
 
   const [ready, setReady] = useState(false);
+  const [price, setPrice] = useState(0);
 
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.Signer | null>(null);
@@ -69,13 +77,18 @@ const App = () => {
 
   const [orders, setOrders] = useState<Array<IORDER>>([]);
   const [conditionalOrders, setConditionalOrders] = useState<Array<IORDER>>([]);
-  const [marginOrders, setMarginOrders] = useState<Array<IORDER>>([]);
+  const [marginOrder, setMarginOrder] = useState<IORDER | null>(null);
+
+  const [priceConditional, setPriceConditional] = useState<number>(0);
+
+  const [leverage, setLeverage] = useState<number>(0);
+  const [addCollateral, setAddCollateral] = useState<number>(0);
+  const [removeCollateral, setRemoveCollateral] = useState<number>(0);
 
   const [signerAddress, setSignerAddress] = useState<string | null>(null);
-  const [signLess, setSignLess] = useState<boolean>(false);
+  const [signLess, setGassless] = useState<boolean>(false);
   const [tabIndex, setTabIndex] = useState(0);
 
-  const [max, setMax] = useState<boolean>(false);
   const [connectStatus, setConnectStatus] = useState<Status | null>({
     state: State.missing,
     message: "Loading",
@@ -94,18 +107,16 @@ const App = () => {
       const web3Provider = new ethers.BrowserProvider(window.ethereum);
       setLoading(true);
       refresh(web3Provider);
-      localStorage.remove(StorageKeys.SESSION_ID);
-      localStorage.remove(StorageKeys.SESSION_KEY);
       const currentChainId = await window.ethereum.request({
         method: "eth_chainId",
       });
 
-      if (currentChainId !== "0x66eed") {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x66eed" }],
-        });
-      }
+      // if (currentChainId !== "0x75B3DCF") {
+      //   await window.ethereum.request({
+      //     method: "wallet_switchEthereumChain",
+      //     params: [{ chainId: "0x75B3DCF" }],
+      //   });
+      // }
     });
   }
 
@@ -157,23 +168,104 @@ const App = () => {
   const onAction = async (action: number) => {
     switch (action) {
       case 0:
-        console.log("trading");
-
         if (signLess) {
-          tradeSignLess();
+          setOrderGassless();
         } else {
           setOrder();
         }
 
         break;
       case 1:
-        break;
+        if (signLess) {
+          setConditionalOrderGassless();
+        } else {
+          setConditonalOrder();
+        }
 
+        break;
+      case 2:
+        executeMarginOrder();
+        break;
+      case 3:
+        updateCollateralAmount(true);
+        break;
+      case 4:
+        updateCollateralAmount(false);
+
+        break;
       default:
         setLoading(false);
         break;
     }
   };
+
+  const onUpdate = async (value: number, action: number) => {
+    switch (action) {
+      case 0:
+        break;
+      case 1:
+        setPriceConditional(value);
+        break;
+      case 2:
+        setLeverage(value);
+        break;
+      case 3:
+        setAddCollateral(value);
+        break;
+      case 4:
+        setRemoveCollateral(value);
+        break;
+      default:
+        console.log("do nothing");
+        break;
+    }
+  };
+
+  const getPrice = async (
+    provider: ethers.BrowserProvider,
+    signerAddress: string
+  ) => {
+    if (price != 0) {
+      return;
+    }
+
+    const connection = new EvmPriceServiceConnection(
+      "https://hermes.pyth.network"
+    ); // See Price Service endpoints section below for other endpoints
+
+    const numbers = interval(2000);
+
+    const takeFourNumbers = numbers.pipe(takeUntil(destroyFetchTask));
+
+    takeFourNumbers.subscribe(async (x) => {
+      try {
+        const check = (await connection.getLatestPriceFeeds([
+          "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+        ])) as PriceFeed[];
+
+        const priceObject = check[0].toJson().price;
+
+        if (
+          check.length !== 0 &&
+          priceObject !== undefined &&
+          priceObject.price !== undefined
+        ) {
+          setPrice(+priceObject.price.toString() / 10 ** 8);
+
+          if (tabIndex == 2) {
+            readMarginOrder(
+              provider!,
+              signerAddress!,
+              +priceObject.price.toString() / 10 ** 8
+            );
+          }
+        }
+      } catch (error) {}
+    });
+  };
+  //  static componentWillUnmount() {
+  //     alert("The component named Header is about to be unmounted.");
+  //   }
 
   const setOrder = async () => {
     try {
@@ -182,20 +274,33 @@ const App = () => {
         body: undefined,
         taskId: undefined,
       });
-      setLoading(true);
-      let perpMockContract = await getPerpMockContract(provider!);
-      let tx = await perpMockContract?.setOrder(1000);
-      await tx.wait();
-      setTimeout(() => {
-        doRefresh();
-      }, 2000);
+      console.log(278)
+      try {
+        setLoading(true);
+
+        let perpMockContract = await getPerpMockContract(provider!);
+       await perpMockContract?.setOrder(2000n);
+        setTimeout(() => {
+           doRefresh();
+         }, 1000);
+      } catch (error) {
+        console.log(error)
+      }
+   
+      //await tx.wait();
+ 
     } catch (error) {
       console.log(error);
       setLoading(false);
     }
   };
 
-  const trade = async () => {
+  const setConditonalOrder = async () => {
+    if (priceConditional == price) {
+      alert("Prices can not be equeal");
+      return;
+    }
+
     try {
       setMessage({
         header: "Waiting for tx...",
@@ -203,8 +308,17 @@ const App = () => {
         taskId: undefined,
       });
       setLoading(true);
-      let counterContract = await getCounterContract(provider!);
-      let tx = await counterContract?.increment();
+
+      let above = true;
+      if (priceConditional < price) {
+        above = false;
+      }
+      let perpMockContract = await getPerpMockContract(provider!);
+      let tx = await perpMockContract?.setConditionalOrder(
+        20000,
+        Math.floor(priceConditional * 10 ** 8),
+        above
+      );
       await tx.wait();
       setTimeout(() => {
         doRefresh();
@@ -214,7 +328,86 @@ const App = () => {
       setLoading(false);
     }
   };
-  const tradeSignLess = async () => {
+
+  const executeMarginOrder = async () => {
+    if (leverage <= 0) {
+      alert("leverage must be greater than 0");
+      return;
+    }
+
+    if (price <= 0) {
+      alert("Current price not available");
+      return;
+    }
+
+    if (!signLess) {
+      try {
+        setMessage({
+          header: "Waiting for tx...",
+          body: undefined,
+          taskId: undefined,
+        });
+        setLoading(true);
+
+        let perpMockContract = await getPerpMockContract(provider!);
+        let tx = await perpMockContract?.marginTrade(
+          leverage,
+          20000,
+          Math.floor(price * 10 ** 8)
+        );
+        await tx.wait();
+        setTimeout(() => {
+          doRefresh();
+        }, 2000);
+      } catch (error) {
+        console.log(error);
+        setLoading(false);
+      }
+    } else {
+      setMarginTradeGassless();
+    }
+  };
+
+  const updateCollateralAmount = async (add: boolean) => {
+    if (addCollateral <= 0 && add) {
+      alert("Amount must be greater than 0");
+      return;
+    }
+
+    if (removeCollateral <= 0 && !add) {
+      alert("Amount must be greater than 0");
+      return;
+    }
+
+    if (!signLess) {
+      try {
+        setMessage({
+          header: "Waiting for tx...",
+          body: undefined,
+          taskId: undefined,
+        });
+        setLoading(true);
+
+        let perpMockContract = await getPerpMockContract(provider!);
+        let tx = await perpMockContract?.updateCollateral(
+          marginOrder?.orderId,
+          add ? addCollateral : removeCollateral,
+          add
+        );
+        await tx.wait();
+        setTimeout(() => {
+          doRefresh();
+        }, 2000);
+      } catch (error) {
+        console.log(error);
+        setLoading(false);
+      }
+    } else {
+      updateCollateralSignless(add);
+    }
+  };
+
+  const setOrderGassless = async () => {
     setMessage({
       header: "Relaying the transaction",
       body: undefined,
@@ -222,38 +415,22 @@ const App = () => {
     });
     setLoading(true);
 
-    let tmpCountercontract = await getCounterContract(provider!);
-    let tmpSessionKeyContract = await getSessionContract(provider!);
-    const { data: dataCounter } =
-      await tmpCountercontract!.increment.populateTransaction();
-
-    const sessionId = localStorage.get(StorageKeys.SESSION_ID);
-    const sessionKey = localStorage.get(StorageKeys.SESSION_KEY);
-
-    const tempKey = new TempKey(sessionKey);
-
-    console.log(sessionId);
-
-    let { data: dataExecute } =
-      await tmpSessionKeyContract!.executeCall.populateTransaction(
-        await tmpCountercontract?.getAddress()!,
-        dataCounter!,
-        0,
-        sessionId
-      );
-
-    const signer = new ethers.Wallet(sessionKey as string, provider!);
+    let perpMockContract = await getPerpMockContract(provider!);
+    //
+    const { data: dataSetOrder } =
+      await perpMockContract!.setOrder.populateTransaction(20000);
 
     const request: CallWithERC2771Request = {
-      chainId: BigInt(5),
-      target: await tmpSessionKeyContract?.getAddress()!,
-      data: dataExecute as string,
-      user: tempKey.address as string,
+      chainId: BigInt(30),
+      target: await perpMockContract?.getAddress()!,
+      data: dataSetOrder as string,
+      user: signerAddress as string,
     };
 
+    const web3Provider = new BrowserProvider(window.ethereum);
     const response = await relay.sponsoredCallERC2771(
       request,
-      signer,
+      web3Provider!,
       GELATO_RELAY_API_KEY as string
     );
 
@@ -261,9 +438,127 @@ const App = () => {
     fetchStatus(response.taskId);
   };
 
-  //// Tak Status per TaskId Id
+  const setConditionalOrderGassless = async () => {
+    if (priceConditional == price) {
+      alert("Prices can not be equeal");
+      return;
+    }
+    setMessage({
+      header: "Relaying the transaction",
+      body: undefined,
+      taskId: undefined,
+    });
+    setLoading(true);
+    let above = true;
+    if (priceConditional < price) {
+      above = false;
+    }
+
+    let perpMockContract = await getPerpMockContract(provider!);
+
+    const { data: dataSetOrder } =
+      await perpMockContract!.setConditionalOrder.populateTransaction(
+        20000,
+        Math.floor(priceConditional * 10 ** 8),
+        above
+      );
+
+    const request: CallWithERC2771Request = {
+      chainId: BigInt(30),
+      target: await perpMockContract?.getAddress()!,
+      data: dataSetOrder as string,
+      user: signerAddress as string,
+    };
+    const web3Provider = new BrowserProvider(window.ethereum);
+    const response = await relay.sponsoredCallERC2771(
+      request,
+      web3Provider!,
+      GELATO_RELAY_API_KEY as string
+    );
+
+    console.log(`https://relay.gelato.digital/tasks/status/${response.taskId}`);
+    fetchStatus(response.taskId);
+  };
+
+  const setMarginTradeGassless = async () => {
+    setMessage({
+      header: "Relaying the transaction",
+      body: undefined,
+      taskId: undefined,
+    });
+    setLoading(true);
+    let above = true;
+    if (priceConditional < price) {
+      above = false;
+    }
+
+    let perpMockContract = await getPerpMockContract(provider!);
+
+    const { data: dataSetOrder } =
+      await perpMockContract!.marginTrade.populateTransaction(
+        leverage,
+        20000,
+        Math.floor(price * 10 ** 8)
+      );
+
+    const request: CallWithERC2771Request = {
+      chainId: BigInt(30),
+      target: await perpMockContract?.getAddress()!,
+      data: dataSetOrder as string,
+      user: signerAddress as string,
+    };
+    const web3Provider = new BrowserProvider(window.ethereum);
+    const response = await relay.sponsoredCallERC2771(
+      request,
+     web3Provider!,
+      GELATO_RELAY_API_KEY as string
+    );
+
+    console.log(`https://relay.gelato.digital/tasks/status/${response.taskId}`);
+    fetchStatus(response.taskId);
+  };
+
+  const updateCollateralSignless = async (add: boolean) => {
+    setMessage({
+      header: "Relaying the transaction",
+      body: undefined,
+      taskId: undefined,
+    });
+    setLoading(true);
+    let above = true;
+    if (priceConditional < price) {
+      above = false;
+    }
+
+    let perpMockContract = await getPerpMockContract(provider!);
+
+    const { data: dataSetOrder } =
+      await perpMockContract!.updateCollateral.populateTransaction(
+        marginOrder?.orderId,
+        add ? addCollateral : removeCollateral,
+        add
+      );
+
+    const request: CallWithERC2771Request = {
+      chainId: BigInt(30),
+      target: await perpMockContract?.getAddress()!,
+      data: dataSetOrder as string,
+      user: signerAddress as string,
+    };
+    const web3Provider = new BrowserProvider(window.ethereum);
+    const response = await relay.sponsoredCallERC2771(
+      request,
+     web3Provider!,
+      GELATO_RELAY_API_KEY as string
+    );
+
+    console.log(`https://relay.gelato.digital/tasks/status/${response.taskId}`);
+    fetchStatus(response.taskId);
+  };
+
+  //// Tak Status per TaskId I
   const fetchStatus = async (taskIdToQuery: string) => {
-    const numbers = interval(1000);
+    const numbers = interval(5000);
 
     const takeFourNumbers = numbers.pipe(takeUntil(destroyFetchTask));
 
@@ -283,7 +578,6 @@ const App = () => {
         let header = ``;
 
         txHash = details.txHash;
-        console.log(204, details.taskState);
 
         switch (details.taskState!) {
           case TaskState.WaitingForConfirmation:
@@ -369,7 +663,7 @@ const App = () => {
   //
   const changeTab = (index: number) => {
     setTabIndex(index);
-    console.log(357, index);
+
     refreshTab(index);
   };
 
@@ -397,19 +691,21 @@ const App = () => {
         signerAddress,
         i
       );
-      console.log(+orderId.toString());
+
       let orderResult = await perpMockContract.getOrder(+orderId.toString());
+
       let order: IORDER = {
         orderId: +orderId.toString(),
         timestamp: +orderResult["timestamp"].toString(),
         publishTime: +orderResult["publishTime"].toString(),
         amount: +orderResult["amount"].toString(),
-        price: +orderResult["price"].toString(),
+        priceSettled: +orderResult["priceSettled"].toString() / 10 ** 8,
+        price: 0,
       };
 
       _orders.push(order);
     }
-    console.log(_orders);
+
     setOrders(_orders);
   };
 
@@ -419,69 +715,100 @@ const App = () => {
   ) => {
     let perpMockContract = await getPerpMockContract(provider);
 
-    let totalOrders = await perpMockContract.nrConditionalOrdersByUser(signerAddress);
+    let totalOrders = await perpMockContract.nrConditionalOrdersByUser(
+      signerAddress
+    );
 
     const _orders = [];
     for (let i = 0; i < +totalOrders.toString(); i++) {
-      let orderId = await perpMockContract.consitionslOrdersByUser.staticCallResult(
-        signerAddress,
-        i
+      let orderId =
+        await perpMockContract.conditionalOrdersByUser.staticCallResult(
+          signerAddress,
+          i
+        );
+
+      let orderResult = await perpMockContract.getConditionalOrder(
+        +orderId.toString()
       );
-      console.log(+orderId.toString());
-      let orderResult = await perpMockContract.getOrder(+orderId.toString());
+
       let order: IORDER = {
         orderId: +orderId.toString(),
         timestamp: +orderResult["timestamp"].toString(),
         publishTime: +orderResult["publishTime"].toString(),
         amount: +orderResult["amount"].toString(),
-        price: +orderResult["price"].toString(),
+        price: +orderResult["price"].toString() / 10 ** 8,
+        priceSettled: +orderResult["priceSettled"].toString() / 10 ** 8,
+        above: orderResult["above"],
       };
 
       _orders.push(order);
     }
-    console.log(_orders);
-    setOrders(_orders);
+
+    setConditionalOrders(_orders);
   };
 
-  const readMarginTrades = async (
+  const readMarginOrder = async (
     provider: ethers.BrowserProvider,
-    signerAddress: string
+    signerAddress: string,
+    _price?: number
   ) => {
+    if (_price == undefined) {
+      _price = price;
+    }
+
     let perpMockContract = await getPerpMockContract(provider);
 
-    let totalOrders = await perpMockContract.nrMarginTradesByUser(signerAddress);
+    let orderId = await perpMockContract.marginTradeIdByUser.staticCallResult(
+      signerAddress
+    );
 
-    const _orders = [];
-    for (let i = 0; i < +totalOrders.toString(); i++) {
-      let orderId = await perpMockContract.marginTradesByUser.staticCallResult(
-        signerAddress,
-        i
+    if (+orderId.toString() > 0) {
+      let orderResult = await perpMockContract.getMarginTrade(
+        +orderId.toString()
       );
-      console.log(+orderId.toString());
-      let orderResult = await perpMockContract.getOrder(+orderId.toString());
+
       let order: IORDER = {
         orderId: +orderId.toString(),
         timestamp: +orderResult["timestamp"].toString(),
-        publishTime: +orderResult["publishTime"].toString(),
+        leverage: +orderResult["leverage"].toString(),
         amount: +orderResult["amount"].toString(),
-        price: +orderResult["price"].toString(),
+        price: +orderResult["price"].toString() / 10 ** 8,
+        tokens: +orderResult["tokens"].toString() / 10 ** 4,
+        active: orderResult["active"],
       };
 
-      _orders.push(order);
+      order.threshold = calculateThreshold(order, _price);
+
+      setMarginOrder(order);
     }
-    console.log(_orders);
-    setOrders(_orders);
   };
 
+  const calculateThreshold = (order: IORDER, price: number): number | null => {
+    if (order.price == 0) {
+      return null;
+    }
+
+    let deviation = order.price - price;
+
+    let threshold =
+      ((order.amount - order.leverage! * deviation * order.tokens!) /
+        (order.tokens! * order.price)) *
+      100;
+
+    return threshold;
+  };
 
   const refreshTab = async (index: number) => {
     switch (index) {
-      case 1:
+      case 0:
         await readOrders(provider!, signerAddress!);
         break;
-        case 2:
+      case 1:
         await readConditionalOrders(provider!, signerAddress!);
-          break;
+        break;
+      case 2:
+        await readMarginOrder(provider!, signerAddress!);
+        break;
       default:
         break;
     }
@@ -501,55 +828,26 @@ const App = () => {
         state: State.success,
         message: "Connection Succeed",
       });
-      console.log(405, signerAddress);
-      readOrders(provider, signerAddress);
-
+      getPrice(provider, signerAddress);
+      if (tabIndex == 0) {
+        readOrders(provider, signerAddress);
+      } else if (tabIndex == 1) {
+        readConditionalOrders(provider, signerAddress);
+      } else if (tabIndex == 2) {
+        readMarginOrder(provider, signerAddress);
+      }
       setLoading(false);
     } else {
       setLoading(false);
       setConnectStatus({ state: State.failed, message: "Connection Failed" });
     }
-
-    //
-    // console.log(signer);
   };
 
-  const getSessionContract = async (provider: ethers.BrowserProvider) => {
-    if (sessionKeyContract == undefined) {
-      const sessionKeyAddress = "0x5B91C8E7a2DEABC623E6Ab34E8c26F27Cc18bC66";
-      const _sessionKeyContract = new ethers.Contract(
-        sessionKeyAddress,
-        sessionKeyAbi,
-        provider
-      );
 
-      setSessionKeyContract(_sessionKeyContract);
-      return _sessionKeyContract;
-    } else {
-      return sessionKeyContract;
-    }
-  };
-
-  const getCounterContract = async (provider: ethers.BrowserProvider) => {
-    if (counterContract == undefined) {
-      const signer = await provider?.getSigner();
-      const counterAddress = "0x87CA985c8F3e9b70bCCc25bb67Ae3e2F6f31F51C";
-      const _counterContract = new ethers.Contract(
-        counterAddress,
-        counterAbi,
-        signer
-      );
-
-      setCounterContract(counterContract);
-      return _counterContract;
-    } else {
-      return counterContract;
-    }
-  };
   const getPerpMockContract = async (provider: ethers.BrowserProvider) => {
     if (perpMockContract == undefined) {
       const signer = await provider?.getSigner();
-      const perpMockAddress = "0x5115B85246bb32dCEd920dc6a33E2Be6E37fFf6F";
+      const perpMockAddress = "0x2BF28B8675E4eE0cD45Bd4150DbaA906CF72c935"//"0x0542F269C737bDe9e2d1883FaF0eC2F3D51e5B95";
       const _perpMock = new ethers.Contract(
         perpMockAddress,
         perpMockAbi,
@@ -562,130 +860,10 @@ const App = () => {
       return perpMockContract;
     }
   };
-  const getSession = async (provider: ethers.BrowserProvider) => {
-    const contract = await getSessionContract(provider);
-
-    const sessionId = localStorage.get(StorageKeys.SESSION_ID);
-
-    const packed = ethers.solidityPacked(["string"], [sessionId]);
-    const hash = ethers.keccak256(packed);
-
-    const session = await contract.sessions(hash);
-
-    return session;
-  };
-
 
 
   const signToggle = async () => {
-    setSignLess(!signLess);
-    if (!signLess) {
-      startSignLess();
-    }
-  };
-
-  const startSignLess = async () => {
-    setMessage({
-      header: "Cheking Keys",
-      body: "Retrieving new Session Key...",
-      taskId: undefined,
-    });
-
-    setLoading(true);
-
-    const localStorage = new LocalStorage();
-    let _sessionId = localStorage.get(StorageKeys.SESSION_ID);
-    let _sessionKey = localStorage.get(StorageKeys.SESSION_KEY);
-    console.log(_sessionId, _sessionKey);
-
-    if (_sessionId == null || _sessionKey == null) {
-      createSessionKeys();
-    } else {
-      const session = await getSession(provider!);
-      const tempKey = new TempKey(_sessionKey);
-      const tempAddress = tempKey.address;
-      console.log(session);
-
-      const timestamp = Math.floor(Date.now() / 1000);
-      console.log(timestamp, +session.end.toString());
-      if (
-        tempAddress !== session.tempPublicKey ||
-        timestamp > +session.end.toString()
-      ) {
-        console.log("SESSION KEYS");
-        setMessage({
-          header: "Session Key Invalid",
-          body: "Creating new Session Key...",
-          taskId: undefined,
-        });
-        setTimeout(() => {
-          createSessionKeys();
-        }, 1000);
-      } else {
-        setLoading(false);
-      }
-    }
-  };
-
-  const createSessionKeys = async () => {
-    console.log("CREATING NEW TMPKEY");
-    setMessage({
-      header: "Creating New Session",
-      body: "Preparing tx...",
-      taskId: undefined,
-    });
-
-    // Generate the target payload
-    const sessionKeyAddress = "0xde2568192B20A57dE387132b54C3fa492E334837";
-    const sessionKeyContract = new ethers.Contract(
-      sessionKeyAddress,
-      sessionKeyAbi,
-      provider!
-    );
-
-    const sessionId = uuidv4(); // ⇨ '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
-
-    const tempKey = new TempKey();
-
-    const tempAddress = tempKey.address;
-    console.log(tempKey.privateKey);
-
-    localStorage.save(StorageKeys.SESSION_ID, sessionId);
-    localStorage.save(StorageKeys.SESSION_KEY, tempKey.privateKey);
-
-    console.log(sessionId, tempAddress);
-
-    const { data } = await sessionKeyContract.createSession.populateTransaction(
-      sessionId,
-      3600,
-      tempAddress
-    );
-    setMessage({
-      header: "Creating New Session",
-      body: "Relaying tx",
-      taskId: undefined,
-    });
-    // Populate a relay request
-    const request: CallWithERC2771Request = {
-      chainId: BigInt(5),
-      target: sessionKeyAddress,
-      data: data as string,
-      user: signerAddress!,
-    };
-
-    const response = await relay.sponsoredCallERC2771(
-      request,
-      provider!,
-      GELATO_RELAY_API_KEY as string
-    );
-    setMessage({
-      header: "Creating New Session",
-      body: "Waiting for tx.",
-      taskId: undefined,
-    });
-    console.log(`https://relay.gelato.digital/tasks/status/${response.taskId}`);
-
-    fetchStatus(response.taskId);
+    setGassless(!signLess);
   };
 
   useEffect(() => {
@@ -700,17 +878,39 @@ const App = () => {
           method: "eth_chainId",
         });
 
-        if (currentChainId !== "0x66eed") {
-          await window.ethereum.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: "0x66eed" }],
-          });
-        }
+        // if (currentChainId !== "0x75B3DCF") {
+        //   await window.ethereum.request({
+        //     method: "wallet_switchEthereumChain",
+        //     params: [{ chainId: "0x75B3DCF" }],
+        //   });
+        // }
         const web3Provider = new ethers.BrowserProvider(window.ethereum);
-        refresh(web3Provider);
+        setProvider(web3Provider);
       }
     })();
   }, []);
+
+  useEffect(() => {
+    const init = async () => {
+      if (!provider) {
+        return;
+      }
+      const signer = provider.getSigner();
+
+      /// Instantiate the contract
+      const perpContract = await getPerpMockContract(provider);
+      console.log(await perpMockContract?.getAddress())
+      /// UI update when mint event is fired (we check if the minted token is ours)
+      perpContract.on("settleOrderEvent", async (user: any, orderId) => {
+        console.log(user, orderId);
+        refresh(provider);
+      });
+
+      /// UI update when metadata update event is  fired (we check if the minted token is ours)
+      refresh(provider);
+    };
+    init();
+  }, [provider]);
 
   return (
     <div className="App">
@@ -726,6 +926,7 @@ const App = () => {
           <div>
             {loading && <Loading message={message} />}
             <main>
+              {price.toFixed(4)} BTC/USD
               <Tabs
                 style={{ margin: "20px" }}
                 defaultIndex={0}
@@ -741,21 +942,21 @@ const App = () => {
                   <div className="flex">
                     <Signless checked={signLess} signToggle={signToggle} />
                     <div className="isDeployed">
-                    <p style={{ fontWeight: "300" }}>
+                      <p style={{ fontWeight: "300" }}>
                         User:
                         <span
                           style={{ marginLeft: "10px", fontSize: "15px" }}
                           className="highlight"
                         >
-                        {signerAddress?.substring(0, 6) +
-                          "..." +
-                          signerAddress?.substring(
-                            signerAddress?.length - 4,
-                            signerAddress?.length
-                          )}
+                          {signerAddress?.substring(0, 6) +
+                            "..." +
+                            signerAddress?.substring(
+                              signerAddress?.length - 4,
+                              signerAddress?.length
+                            )}
                         </span>
                       </p>
-                    
+
                       <p style={{ fontWeight: "300" }}>
                         nrOrders:
                         <span
@@ -773,32 +974,428 @@ const App = () => {
                           </span>
                         </span>
                       </p>
-                      <Button ready={ready} onClick={() => onAction(0)}>
-                        {" "}
-                        SetOrder
-                      </Button>
-                      <div className="table-master">
-                        <div className="table">
-                          <p className="table-header"> OrderId</p> <p style={{ width:'100px'}}className="table-header"> Timestamp</p> <p style={{ width:'150px'}} className="table-header"> PublishTime</p>
-                          <p className="table-header"> Price</p>
+                      <Button onClick={() => onAction(0)}> SetOrder</Button>
+                      {orders.length > 0 && (
+                        <div className="table-master">
+                          <div className="table">
+                            <p className="table-header table-header-title">
+                              {" "}
+                              OrderId
+                            </p>{" "}
+                            <p
+                              style={{ width: "100px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              Timestamp
+                            </p>{" "}
+                            <p
+                              style={{ width: "150px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              PublishTime
+                            </p>
+                            <p
+                              style={{ width: "150px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              PriceSettled
+                            </p>
+                          </div>
+                          {orders.map((val, index) => {
+                            return (
+                              <div key={index} className="table">
+                                <p className="table-header"> {val.orderId}</p>{" "}
+                                <p
+                                  style={{ width: "100px" }}
+                                  className="table-header"
+                                >
+                                  {" "}
+                                  {val.timestamp}
+                                </p>{" "}
+                                <p
+                                  style={{ width: "150px" }}
+                                  className="table-header"
+                                >
+                                  {" "}
+                                  {val.publishTime}
+                                </p>
+                                <p
+                                  style={{ width: "150px" }}
+                                  className="table-header"
+                                >
+                                  {" "}
+                                  {val.priceSettled}
+                                </p>
+                              </div>
+                            );
+                          })}
                         </div>
-                        {orders.map((val, index) => {
-                          return  <div className="table">
-                          <p className="table-header"> {val.orderId}</p> <p style={{ width:'100px'}}className="table-header"> {val.timestamp}</p> <p style={{ width:'150px'}} className="table-header"> {val.publishTime}</p>
-                          <p className="table-header"> {val.price}</p>
-                        </div>;
-                        })}
-                      </div>
-                  
-               
+                      )}
                     </div>
                   </div>
                 </TabPanel>
                 <TabPanel>
-                  <h2>Any content 2</h2>
+                  <div className="flex">
+                    <Signless checked={signLess} signToggle={signToggle} />
+                    <div className="isDeployed">
+                      <p style={{ fontWeight: "300" }}>
+                        User:
+                        <span
+                          style={{ marginLeft: "10px", fontSize: "15px" }}
+                          className="highlight"
+                        >
+                          {signerAddress?.substring(0, 6) +
+                            "..." +
+                            signerAddress?.substring(
+                              signerAddress?.length - 4,
+                              signerAddress?.length
+                            )}
+                        </span>
+                      </p>
+                      <p style={{ fontWeight: "300" }}>
+                        nrOrders:
+                        <span
+                          style={{ marginLeft: "10px", fontSize: "15px" }}
+                          className="highlight"
+                        >
+                          {conditionalOrders.length}
+                          <span style={{ position: "relative", top: "5px" }}>
+                            <BiRefresh
+                              color="white"
+                              cursor={"pointer"}
+                              fontSize={"20px"}
+                              onClick={doRefresh}
+                            />
+                          </span>
+                        </span>
+                      </p>
+                      <Action
+                        onClick={onAction}
+                        onUpdate={onUpdate}
+                        placeholder="Input Price"
+                        text="Set Conditinal Order"
+                        action={1}
+                        amount={priceConditional}
+                      />
+
+                      <div className="table-master">
+                        {conditionalOrders.length > 0 && (
+                          <div className="table">
+                            <p className="table-header table-header-title">
+                              {" "}
+                              OrderId
+                            </p>{" "}
+                            <p
+                              style={{ width: "100px" }}
+                              className="table-header  table-header-title"
+                            >
+                              {" "}
+                              Timestamp
+                            </p>{" "}
+                            <p
+                              style={{ width: "150px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              PublishTime
+                            </p>
+                            <p
+                              style={{ width: "140px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              PriceUser
+                            </p>
+                            <p
+                              style={{ width: "140px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              PriceSettled
+                            </p>
+                            <p
+                              style={{ width: "100px" }}
+                              className="table-header table-header-title"
+                            >
+                              {" "}
+                              up/down
+                            </p>
+                          </div>
+                        )}
+                        {conditionalOrders.map((val, index) => {
+                          return (
+                            <div key={index} className="table">
+                              <p className="table-header"> {val.orderId}</p>{" "}
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header "
+                              >
+                                {" "}
+                                {val.timestamp}
+                              </p>{" "}
+                              <p
+                                style={{ width: "150px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {val.publishTime}
+                              </p>
+                              <p
+                                style={{ width: "140px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {val.price.toFixed(4)}
+                              </p>
+                              <p
+                                style={{ width: "140px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {val.priceSettled?.toFixed(4)}
+                              </p>
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {val.above ? "up" : "down"}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 </TabPanel>
                 <TabPanel>
-                  <h2>Any content 3</h2>
+                  <div className="flex">
+                    <Signless checked={signLess} signToggle={signToggle} />
+                    <div className="isDeployed">
+                      <p style={{ fontWeight: "300" }}>
+                        User:
+                        <span
+                          style={{ marginLeft: "10px", fontSize: "15px" }}
+                          className="highlight"
+                        >
+                          {signerAddress?.substring(0, 6) +
+                            "..." +
+                            signerAddress?.substring(
+                              signerAddress?.length - 4,
+                              signerAddress?.length
+                            )}
+                        </span>
+                      </p>
+                      <p style={{ fontWeight: "200", fontSize: "14px" }}>
+                        <span>
+                          The order amount is fixed to 20000, the liquidation
+                          threshold is 50%
+                        </span>
+                      </p>
+                      {marginOrder == null ? (
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Action
+                            onClick={onAction}
+                            onUpdate={onUpdate}
+                            text="Set Margin Order"
+                            placeholder="Input Leverage"
+                            action={2}
+                            amount={leverage}
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          {marginOrder.active == true ? (
+                            <div>
+                              <p
+                                style={{ fontWeight: "200", fontSize: "14px" }}
+                              >
+                                <span>
+                                  You can add or remove collateral from your
+                                  trade
+                                </span>
+                              </p>
+
+                              <p style={{ fontWeight: "300" }}>
+                                Active trade:
+                                <span
+                                  style={{
+                                    marginLeft: "10px",
+                                    fontSize: "15px",
+                                  }}
+                                  className="highlight"
+                                >
+                                  {marginOrder.active ? "true" : "false"}
+                                  <span
+                                    style={{ position: "relative", top: "5px" }}
+                                  >
+                                    <BiRefresh
+                                      color="white"
+                                      cursor={"pointer"}
+                                      fontSize={"20px"}
+                                      onClick={doRefresh}
+                                    />
+                                  </span>
+                                </span>
+                              </p>
+
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexWrap: "wrap",
+                                  justifyContent: "center",
+                                }}
+                              >
+                                <Action
+                                  onClick={onAction}
+                                  onUpdate={onUpdate}
+                                  text="Add"
+                                  placeholder="Input Amount"
+                                  action={3}
+                                  amount={addCollateral}
+                                />
+
+                                <Action
+                                  onClick={onAction}
+                                  onUpdate={onUpdate}
+                                  text="Remove"
+                                  placeholder="Input Amount"
+                                  action={4}
+                                  amount={removeCollateral}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <p
+                                style={{ fontWeight: "200", fontSize: "14px" }}
+                              >
+                                <span>
+                                  Your trade has been{" "}
+                                  <span
+                                    style={{ color: "red", fontWeight: "700" }}
+                                  >
+                                    liquidated
+                                  </span>
+                                  , please set a new order
+                                </span>
+                              </p>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexWrap: "wrap",
+                                  justifyContent: "center",
+                                }}
+                              >
+                                <Action
+                                  onClick={onAction}
+                                  onUpdate={onUpdate}
+                                  text="Set New Margin Order"
+                                  placeholder="Input Leverage"
+                                  action={2}
+                                  amount={leverage}
+                                />
+                              </div>
+                            </div>
+                          )}
+                          <div className="table-master">
+                            <div className="table">
+                              <p className="table-header table-header-title">
+                                {" "}
+                                OrderId
+                              </p>{" "}
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header table-header-title"
+                              >
+                                {" "}
+                                Timestamp
+                              </p>{" "}
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header table-header-title"
+                              >
+                                {" "}
+                                Amount
+                              </p>
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header table-header-title"
+                              >
+                                {" "}
+                                Tokens
+                              </p>
+                              <p
+                                style={{ width: "150px" }}
+                                className="table-header table-header-title"
+                              >
+                                {" "}
+                                PriceUser
+                              </p>
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header table-header-title"
+                              >
+                                {" "}
+                                Threshold
+                              </p>
+                            </div>
+
+                            <div className="table">
+                              <p className="table-header ">
+                                {" "}
+                                {marginOrder.orderId}
+                              </p>{" "}
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {marginOrder.timestamp}
+                              </p>{" "}
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {marginOrder.amount}
+                              </p>
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {marginOrder.tokens?.toFixed(4)}
+                              </p>
+                              <p
+                                style={{ width: "150px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {marginOrder.price}
+                              </p>
+                              <p
+                                style={{ width: "100px" }}
+                                className="table-header"
+                              >
+                                {" "}
+                                {marginOrder.threshold?.toFixed(2)}%
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </TabPanel>
               </Tabs>
             </main>
@@ -811,7 +1408,7 @@ const App = () => {
           connectStatus?.state == State.failed) && (
           <div style={{ textAlign: "center", marginTop: "20px" }}>
             <h3> Please connect your metamask</h3>
-            <Button status={connectStatus} ready={ready} onClick={onConnect}>
+            <Button status={connectStatus} onClick={onConnect}>
               <img src={metamask} width={25} height={25} />{" "}
               <span style={{ position: "relative", top: "-6px" }}>
                 Connect{" "}
